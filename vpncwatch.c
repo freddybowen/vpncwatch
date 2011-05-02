@@ -1,7 +1,8 @@
 /*
  * vpncwatch.c
  * Keepalive daemon for vpnc (so I can fit it on an OpenWRT system)
- * Author: David Cantrell <dcantrell@redhat.com>
+ * Modified by: Freddy Bowen <frederick.bowen@gmail.com>
+ * Original Author: David Cantrell <dcantrell@redhat.com>
  *
  * Adapted from vpnc-watch.py by Gary Benson <gbenson@redhat.com>
  * (Python is TOO BIG for a 16M OpenWRT router.)
@@ -93,9 +94,10 @@ int main(int argc, char **argv) {
     char *me = NULL, *cmd = NULL, *cmdpath = NULL;
     char cmdbuf[PATH_MAX];
     pid_t cmdpid = 0;
-    char *chkhost = NULL;
-    unsigned short chkport = 0;
+    char *chkhost = NULL, *chkport = NULL;
+    unsigned int chkport_test = 0;
     unsigned int chkinterval = 3600;
+    char *ep = NULL;
 
     /* handle options */
     if (argc < 2) {
@@ -110,11 +112,11 @@ int main(int argc, char **argv) {
                 break;
             case 'p':
                 errno = 0;
-                chkport = strtol(optarg, &ep, 10);
+                chkport_test = strtol(strdup(optarg), &ep, 10);
 
-                if (((chkport == LONG_MIN || chkport == LONG_MAX) &&
+                if (((chkport_test == LONG_MIN || chkport_test == LONG_MAX) &&
                      (errno == ERANGE)) ||
-                    ((chkport == 0) && (errno == EINVAL))) {
+                    ((chkport_test == 0) && (errno == EINVAL))) {
                     fprintf(stderr, "%s (%d): %s", __func__, __LINE__,
                             strerror(errno));
                     fflush(stderr);
@@ -122,14 +124,15 @@ int main(int argc, char **argv) {
                     return EXIT_FAILURE;
                 }
 
-                if ((chkport <= 0) || (chkport >= 65536)) {
+                if ((chkport_test <= 0) || (chkport_test >= 65536)) {
                     fprintf(stderr, "Error: Invalid port specified: %d\n",
-                            chkport);
+                            chkport_test);
                     fflush(stderr);
                     show_usage(argv[0]);
                     return EXIT_FAILURE;
                 }
 
+                chkport = strdup(optarg);
                 break;
             case 'i':
                 errno = 0;
@@ -167,31 +170,31 @@ int main(int argc, char **argv) {
 
     /* set up control variables */
     me = basename(argv[0]);
-    cmd = basename(argv[1]);
-    argv[1] = strdup(cmd);
+    cmd = basename(argv[argc-2]);
+    argv[argc-2] = strdup(cmd);
     argv += optind;                 /* skip to the end.... */
+
+    /* create a syslog interface */
+    openlog(me, LOG_CONS | LOG_PID, LOG_DAEMON);
 
     if ((cmdpath = realpath(which(cmd), cmdbuf)) == NULL) {
         syslog(LOG_ERR, "realpath failure: %s:%d", __func__, __LINE__);
         return EXIT_FAILURE;
     }
 
-    /* create a syslog interface */
-    openlog(me, LOG_CONS | LOG_PID, LOG_DAEMON);
-
-    /* see if we are already running */
-    if ((cmdpid = pidof(cmd)) != 0) {
-        syslog(LOG_ERR, "%s already running (%d)", cmd, cmdpid);
-        return EXIT_FAILURE;
-    }
-
+    /* see if vpnc is already running */
+    if ((cmdpid = pidof(cmd)) != -1) {
+        syslog(LOG_ERR, "%s already running (pid: %d); watching...", cmd, cmdpid);
+    } 
     /* start the command */
-    if ((cmdpid = start_cmd(cmd, cmdpath, argv)) == -1) {
+    else if ((cmdpid = start_cmd(cmd, cmdpath, argv)) == -1) {
         syslog(LOG_ERR, "start_cmd failure");
         return EXIT_FAILURE;
     }
 
+/*
     syslog(LOG_ERR, "cmdpid: |%d|", cmdpid);
+*/
 
     /* run in the background */
     if (daemon(0, 0) == -1) {
@@ -215,32 +218,39 @@ int main(int argc, char **argv) {
         chkinterval = 3600;
     }
 
+    syslog(LOG_NOTICE, "Running daemon (pid: %d)", getpid());
+
     /* main running loop */
     do_exit = 0;
     while (!do_exit) {
         do_restart = 0;
-        sleep(1);
+        sleep(chkinterval);
+
+		/* syslog(LOG_INFO, "Heartbeat (self: %d, %s: %d)", getpid(), cmd, cmdpid); */
+
         running = is_running(cmdpid);
 
         /* see if vpnc is running */
         if (!running) {
-            syslog(LOG_WARNING, "%s died", cmd);
+            syslog(LOG_WARNING, "Found \"%s %s\" dead!", cmd, argv[1]);
         } else if (do_exit || do_restart) {
             stop_cmd(cmd, cmdpid);
         }
 
         /* assuming it's running, check the actual network link */
-        if (running && chkhost != NULL && chkport > 0) {
+        if (running && chkhost != NULL && chkport != NULL) {
             if (!is_network_up(chkhost, chkport)) {
                 do_restart = 1;
+                syslog(LOG_NOTICE, "No contact with %s:%s", chkhost, chkport);
             }
         }
 
         if (do_restart || !running) {
+            syslog(LOG_WARNING, "Restarting \"%s %s\" ...", cmd, argv[1]);
             cmdpid = start_cmd(cmd, cmdpath, argv);
         }
     }
 
-    syslog(LOG_INFO, "exiting");
+    syslog(LOG_INFO, "Exiting (pid: %d)", getpid());
     return EXIT_SUCCESS;
 }

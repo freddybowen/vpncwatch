@@ -1,7 +1,8 @@
 /*
  * vpncwatch.h
  * Keepalive daemon for vpnc (so I can fit it on an OpenWRT system)
- * Author: David Cantrell <dcantrell@redhat.com>
+ * Modified by: Freddy Bowen <frederick.bowen@gmail.com>
+ * Original Author: David Cantrell <dcantrell@redhat.com>
  *
  * Adapted from vpnc-watch.py by Gary Benson <gbenson@redhat.com>
  * (Python is TOO BIG for a 16M OpenWRT router.)
@@ -33,4 +34,4 @@ int is_running(int);
 void signal_handler(int);
 pid_t start_cmd(char *, char *, char **);
 void stop_cmd(char *, int);
-int is_network_up(char *, unsigned short);
+int is_network_up(char *, char *);

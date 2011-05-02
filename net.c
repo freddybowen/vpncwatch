@@ -1,7 +1,8 @@
 /*
  * net.c
  * Network functions for vpncwatch
- * Author: David Cantrell <dcantrell@redhat.com>
+ * Modified by: Freddy Bowen <frederick.bowen@gmail.com>
+ * Original Author: David Cantrell <dcantrell@redhat.com>
  *
  * Adapted from vpnc-watch.py by Gary Benson <gbenson@redhat.com>
  * (Python is TOO BIG for a 16M OpenWRT router.)
@@ -31,42 +32,54 @@
 
 #include "vpncwatch.h"
 
-int is_network_up(char *chkhost, unsigned short chkport) {
-    int sock;
-    struct sockaddr_in chksock;
-    struct hostent *host = NULL;
+int is_network_up(char *host, char *port) 
+{
+	struct addrinfo hints;
+	struct addrinfo *result, *rp;
+
+    int s, sfd;
 
     /* don't do a network check if the user didn't specify a host */
-    if (chkhost == NULL || chkport == 0) {
+    if (host == NULL || port == NULL) {
         return 1;
     }
 
-    if ((sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
-        syslog(LOG_ERR, "socket() creation error: %s", strerror(errno));
-        return 0;
-    }
+ /* Obtain address(es) matching host/port */
 
-    memset(&chksock, 0, sizeof(chksock));
-    chksock.sin_family = AF_INET;
-    chksock.sin_port = htons(chkport);
+   memset(&hints, 0, sizeof(struct addrinfo));
+   hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
+   hints.ai_socktype = SOCK_DGRAM; /* Datagram socket */
+   hints.ai_flags = 0;
+   hints.ai_protocol = 0;          /* Any protocol */
 
-    /* get the server address */
-    if (inet_pton(AF_INET, chkhost, &(chksock.sin_addr.s_addr)) <= 0) {
-        if ((host = gethostbyname(chkhost)) == NULL) {
-            syslog(LOG_ERR, hstrerror(h_errno));
-            return 0;
-        }
+   s = getaddrinfo(host, port, &hints, &result);
+   if (s != 0) {
+       syslog(LOG_ERR, "getaddrinfo() error: %s", gai_strerror(s));
+       return 0;
+   }
 
-        memcpy(&(chksock.sin_addr.s_addr), &(host->h_addr_list[0]),
-               sizeof(struct in_addr));
-    }
+	/* getaddrinfo() returns a list of address structures.
+    	  Try each address until we successfully connect(2).
+	      If socket(2) (or connect(2)) fails, we (close the socket
+	      and) try the next address. */
 
-    /* try to connect */
-    if (connect(sock, (struct sockaddr *) &chksock, sizeof(chksock)) < 0) {
-        syslog(LOG_ERR, "connect() failed: %s", strerror(errno));
-        return 0;
-    }
+	for (rp = result; rp != NULL; rp = rp->ai_next) {
+	   sfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+	   if (sfd == -1)
+	       continue;
+	
+	   if (connect(sfd, rp->ai_addr, rp->ai_addrlen) != -1)
+	       break;                  /* Success */
+		else 
+			syslog(LOG_ERR, "connect() failed: %s", strerror(errno));
+	
+	   close(sfd);
+	}
+	
+	if (rp == NULL)                /* No address succeeded */
+	   return 0;
 
-    close(sock);
-    return 1;
+	freeaddrinfo(result);           /* No longer needed */
+	close(sfd);
+	return 1;
 }
